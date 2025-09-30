@@ -15,6 +15,7 @@
 | [RealESRNet_x4plus](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth)                      | X4    | X4 model with MSE loss (over-smooth effects) |
 | [official ESRGAN_x4](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/ESRGAN_SRx4_DF2KOST_official-ff704c30.pth) | X4    | official ESRGAN model                        |
 | [realesr-general-x4v3](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth) | X4 (can also be used for X1, X2, X3) | A tiny small model (consume much fewer GPU memory and time); not too strong deblur and denoise capacity |
+| [realesr-general-x2v3](https://github.com/quangnguyen-ai/Real-ESRGAN/blob/master/weights/realesr-general-x2v3.pth) | X2 | X2 model converted from realesr-general-x4v3; small model for general scenes |
 
 The following models are **discriminators**, which are usually used for fine-tuning.
 
@@ -40,6 +41,7 @@ The following models are **discriminators**, which are usually used for fine-tun
 | Models                                                                                                                             | Scale | Description                    |
 | ---------------------------------------------------------------------------------------------------------------------------------- | :---- | :----------------------------- |
 | [realesr-animevideov3](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth) | X4<sup>1</sup>    | Anime video model with XS size |
+| [realesr-animevideox2v3](https://github.com/quangnguyen-ai/Real-ESRGAN/blob/master/weights/realesr-animevideox2v3.pth) | X2    | X2 anime video model converted from realesr-animevideov3 |
 
 Note: <br>
 <sup>1</sup> This model can also be used for X1, X2, X3.

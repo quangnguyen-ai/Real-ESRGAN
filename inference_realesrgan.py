@@ -79,7 +79,7 @@ def main():
     elif args.model_name == 'realesr-animevideox2v3':  # x2 VGG-style model (XS size)
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=2, act_type='prelu')
         netscale = 2
-        file_url = []
+        file_url = ['https://github.com/quangnguyen-ai/Real-ESRGAN/blob/master/weights/realesr-animevideox2v3.pth']
     elif args.model_name == 'realesr-general-x4v3':  # x4 VGG-style model (S size)
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
         netscale = 4
@@ -90,7 +90,7 @@ def main():
     elif args.model_name == 'realesr-general-x2v3':  # x2 VGG-style model (S size)
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=2, act_type='prelu')
         netscale = 2
-        file_url = []
+        file_url = ['https://github.com/quangnguyen-ai/Real-ESRGAN/blob/master/weights/realesr-general-x2v3.pth']
 
     # determine model paths
     if args.model_path is not None:
