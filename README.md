@@ -59,6 +59,8 @@ Other recommended projects:<br>
 <!---------------------------------- Updates --------------------------->
 ## 🚩 Updates
 
+- ✅ Add **x2 upscaling models**: **realesr-animevideox2v3** and **realesr-general-x2v3** - converted from x4 models for 2x upscaling tasks.
+- ✅ Add **inference_realesrgan_video_cv2.py** - OpenCV-based video inference without ffmpeg dependency.
 - ✅ Add the **realesr-general-x4v3** model - a tiny small model for general scenes. It also supports the **-dn** option to balance the noise (avoiding over-smooth results). **-dn** is short for denoising strength.
 - ✅ Update the **RealESRGAN AnimeVideo-v3** model. Please see [anime video models](docs/anime_video_model.md) and [comparisons](docs/anime_comparisons.md) for more details.
 - ✅ Add small models for anime videos. More details are in [anime video models](docs/anime_video_model.md).
@@ -185,7 +187,9 @@ A common command: python inference_realesrgan.py -n RealESRGAN_x4plus -i infile 
   -h                   show this help
   -i --input           Input image or folder. Default: inputs
   -o --output          Output folder. Default: results
-  -n --model_name      Model name. Default: RealESRGAN_x4plus
+  -n --model_name      Model name. Options: RealESRGAN_x4plus | RealESRNet_x4plus | RealESRGAN_x4plus_anime_6B |
+                       RealESRGAN_x2plus | realesr-animevideov3 | realesr-animevideox2v3 |
+                       realesr-general-x4v3 | realesr-general-x2v3. Default: RealESRGAN_x4plus
   -s, --outscale       The final upsampling scale of the image. Default: 4
   --suffix             Suffix of the restored image. Default: out
   -t, --tile           Tile size, 0 for no tile during testing. Default: 0
@@ -227,6 +231,30 @@ python inference_realesrgan.py -n RealESRGAN_x4plus_anime_6B -i inputs
 ```
 
 Results are in the `results` folder
+
+#### Inference with x2 upscaling models
+
+For 2x upscaling tasks, use the x2 models:
+
+```bash
+# For anime videos (smaller model, faster)
+python inference_realesrgan.py -n realesr-animevideox2v3 -i inputs --fp32
+
+# For general scenes (better quality)
+python inference_realesrgan.py -n realesr-general-x2v3 -i inputs --fp32
+```
+
+#### Video inference with OpenCV
+
+For video processing without ffmpeg dependency:
+
+```bash
+# Basic usage
+python inference_realesrgan_video_cv2.py -i input.mp4 -n realesr-animevideox2v3 --fp32
+
+# With custom output and FPS
+python inference_realesrgan_video_cv2.py -i input.mp4 -o output.mp4 -n realesr-general-x2v3 --fps 30 --fp32
+```
 
 ---
 
