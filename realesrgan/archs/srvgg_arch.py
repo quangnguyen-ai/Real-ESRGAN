@@ -85,7 +85,7 @@ class SRVGGNetCompactInfer(nn.Module):
     """
 
     def __init__(self, num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type='prelu'):
-        super(SRVGGNetCompact, self).__init__()
+        super(SRVGGNetCompactInfer, self).__init__()
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
         self.num_feat = num_feat
