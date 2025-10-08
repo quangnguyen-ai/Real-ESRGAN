@@ -20,7 +20,8 @@ def main():
         type=str,
         default='RealESRGAN_x4plus',
         help=('Model names: RealESRGAN_x4plus | RealESRNet_x4plus | RealESRGAN_x4plus_anime_6B | RealESRGAN_x2plus | '
-              'realesr-animevideov3 | realesr-animevideox2v3 | realesr-general-x4v3 | realesr-general-x2v3'))
+              'realesr-animevideov3 | realesr-animevideox2v3 | realesr-general-x4v3 | realesr-general-x2v3 | '
+              'smalll-realesr-animevideox2v3 | medium-realesr-animevideox2v3'))
     parser.add_argument('-o', '--output', type=str, default='results', help='Output folder')
     parser.add_argument(
         '-dn',
@@ -91,6 +92,14 @@ def main():
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=2, act_type='prelu')
         netscale = 2
         file_url = ['https://github.com/quangnguyen-ai/Real-ESRGAN/blob/master/weights/realesr-general-x2v3.pth']
+    elif args.model_name == 'smalll-realesr-animevideox2v3':  # x2 VGG-style model (Ultra-compact for embedded)
+        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=32, num_conv=16, upscale=2, act_type='prelu')
+        netscale = 2
+        file_url = None  # Local model only
+    elif args.model_name == 'medium-realesr-animevideox2v3':  # x2 VGG-style model (Medium - optimal balance)
+        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=48, num_conv=16, upscale=2, act_type='prelu')
+        netscale = 2
+        file_url = None  # Local model only
 
     # determine model paths
     if args.model_path is not None:
@@ -98,11 +107,14 @@ def main():
     else:
         model_path = os.path.join('weights', args.model_name + '.pth')
         if not os.path.isfile(model_path):
-            ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-            for url in file_url:
-                # model_path will be updated
-                model_path = load_file_from_url(
-                    url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+            if file_url is not None:
+                ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+                for url in file_url:
+                    # model_path will be updated
+                    model_path = load_file_from_url(
+                        url=url, model_dir=os.path.join(ROOT_DIR, 'weights'), progress=True, file_name=None)
+            else:
+                raise FileNotFoundError(f'Model {args.model_name} not found at {model_path}. Please ensure the model file exists.')
 
     # use dni to control the denoise strength
     dni_weight = None
@@ -152,6 +164,7 @@ def main():
             if args.face_enhance:
                 _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
             else:
+
                 output, _ = upsampler.enhance(img, outscale=args.outscale)
         except RuntimeError as error:
             print('Error', error)
