@@ -43,7 +43,7 @@ class SimpleResidualBlock(nn.Module):
 
         # PReLU activation (baseline-compatible)
         # self.act = nn.PReLU(num_parameters=channels)
-        self.act = nn.SiLU(inplace=True)
+        self.act = nn.ReLU6(inplace=True)
     def forward(self, x):
         identity = x
 
@@ -172,8 +172,8 @@ class SRVGGNetMobileInfer(nn.Module):
         self.head = nn.Sequential(
             nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
             #nn.PReLU(num_parameters=num_feat)
-            nn.SiLU(inplace=True)
-            # nn.ReLU6()
+            # nn.SiLU(inplace=True)
+             nn.ReLU6(inplace=True)
         )
 
         # Body: Simple residual blocks
