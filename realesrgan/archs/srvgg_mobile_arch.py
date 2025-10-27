@@ -42,8 +42,8 @@ class SimpleResidualBlock(nn.Module):
         self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=True)
 
         # PReLU activation (baseline-compatible)
-        self.act = nn.PReLU(num_parameters=channels)
-
+        # self.act = nn.PReLU(num_parameters=channels)
+        self.act = nn.ReLU6()
     def forward(self, x):
         identity = x
 
