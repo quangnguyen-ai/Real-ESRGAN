@@ -117,8 +117,10 @@ class SRVGGNetMobile(nn.Module):
 
     def forward(self, x):
         # Upsample input for global residual connection
-        # Use 'nearest' mode (baseline-compatible, HTP-optimized, ~10ms faster than bilinear)
-        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
+        base = F.interpolate(
+            x, scale_factor=self.upscale,
+            mode='bilinear', align_corners=False
+        )
 
         # Main path: feature extraction and upsampling
         feat = self.head(x)
@@ -169,7 +171,8 @@ class SRVGGNetMobileInfer(nn.Module):
         # Head: expand to feature channels with PReLU (baseline-compatible)
         self.head = nn.Sequential(
             nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.PReLU(num_parameters=num_feat)
+            #nn.PReLU(num_parameters=num_feat)
+            nn.ReLU6()
         )
 
         # Body: Simple residual blocks
@@ -186,8 +189,10 @@ class SRVGGNetMobileInfer(nn.Module):
 
     def forward(self, x):
         # Upsample input for global residual connection
-        # Use 'nearest' mode (baseline-compatible, HTP-optimized, ~10ms faster than bilinear)
-        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
+        base = F.interpolate(
+            x, scale_factor=self.upscale,
+            mode='bilinear', align_corners=False
+        )
 
         # Main path: feature extraction and upsampling
         feat = self.head(x)
@@ -195,8 +200,8 @@ class SRVGGNetMobileInfer(nn.Module):
         out = self.tail(feat)
         out = self.upsampler(out)
 
-        # Global residual connection
-        out = out + base
+        # VI
+        # out = out + base
 
         # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
