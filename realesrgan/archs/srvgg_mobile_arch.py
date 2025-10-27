@@ -43,7 +43,7 @@ class SimpleResidualBlock(nn.Module):
 
         # PReLU activation (baseline-compatible)
         # self.act = nn.PReLU(num_parameters=channels)
-        self.act = nn.ReLU6()
+        self.act = nn.SiLU(inplace=True)
     def forward(self, x):
         identity = x
 
@@ -172,7 +172,8 @@ class SRVGGNetMobileInfer(nn.Module):
         self.head = nn.Sequential(
             nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
             #nn.PReLU(num_parameters=num_feat)
-            nn.ReLU6()
+            nn.SiLU(inplace=True)
+            # nn.ReLU6()
         )
 
         # Body: Simple residual blocks
@@ -193,7 +194,7 @@ class SRVGGNetMobileInfer(nn.Module):
             x, scale_factor=self.upscale,
             mode='bilinear', align_corners=False
         )
-
+        # base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
         # Main path: feature extraction and upsampling
         feat = self.head(x)
         feat = self.body(feat)
@@ -201,7 +202,7 @@ class SRVGGNetMobileInfer(nn.Module):
         out = self.upsampler(out)
 
         # VI
-        # out = out + base
+        out = out + base
 
         # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
