@@ -257,9 +257,9 @@ class SRVGGNetMobileInfer(nn.Module):
     def __init__(self,
                  num_in_ch: int = 1,
                  num_out_ch: int = 1,
-                 num_feat: int = 64,
+                 num_feat: int = 32,
                  num_conv: int = 12,
-                 expansion: float = 2.5,
+                 expansion: float = 2.0,
                  attention_freq: int = 0,
                  upscale: int = 2,
                  act_type: str = 'prelu'):
