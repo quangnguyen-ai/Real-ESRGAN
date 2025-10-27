@@ -1,15 +1,16 @@
 """
-SRVGGNetMobile: Lightweight SR network with YOLO-optimized Bottleneck Blocks
+SRVGGNetMobile: Lightweight SR network with Simple Residual Blocks
 Optimized for Qualcomm QCS8550 HTP edge device
 
 Key features:
-- YOLO-style bottleneck blocks (2 × 3×3 conv with residual)
-- BatchNorm + SiLU fusion (HTP-optimized, proven in YOLOv8 @ 250 FPS)
-- No 1×1 convolutions (avoids HTP bottleneck)
-- Power-of-2 channels for hardware alignment
+- Simple residual blocks (single 3×3 conv + PReLU + residual)
+- Same computation as baseline SRVGGNetCompact (8 convolutions)
+- No BatchNorm overhead (proven fast on HTP)
+- PReLU activation (HTP-optimized, used in baseline @ 60 FPS)
+- Residual connections for stable training and better gradient flow
 
-Target performance: 45-60 FPS @ 640x512, PSNR 27.5-28
-Architecture: Inspired by YOLOv8's efficient blocks
+Target performance: 55-60 FPS @ 640x512, PSNR 27.5-28
+Architecture: Baseline-compatible with residual connections
 """
 
 import torch
@@ -18,48 +19,36 @@ import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
 
-class YOLOBottleneck(nn.Module):
+class SimpleResidualBlock(nn.Module):
     """
-    YOLO-style Bottleneck block optimized for Qualcomm HTP.
+    Simple Residual Block optimized for Qualcomm HTP.
 
     Architecture:
-        Input → Conv 3×3 + BN + SiLU → Conv 3×3 + BN + SiLU → + residual
+        Input → Conv 3×3 → PReLU → + residual → Output
 
-    This design is proven efficient on QCS8550 (YOLOv8 achieves 250 FPS):
-    - Uses only 3×3 convolutions (HTP-optimized)
-    - BatchNorm + SiLU fusion by HTP compiler
-    - No 1×1 convs (which are slow on HTP)
+    This design is baseline-compatible with residual connections:
+    - Single 3×3 convolution (HTP-optimized, like baseline)
+    - PReLU activation (proven fast, used in baseline @ 60 FPS)
+    - No BatchNorm (no overhead)
     - Residual connection for stable training
 
     Args:
         channels: Number of input/output channels (should be power of 2)
-        use_bn: Whether to use BatchNorm (default: True for inference optimization)
     """
-    def __init__(self, channels: int, use_bn: bool = True):
+    def __init__(self, channels: int):
         super().__init__()
 
-        # First 3×3 conv
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=not use_bn)
-        self.bn1 = nn.BatchNorm2d(channels) if use_bn else nn.Identity()
+        # Single 3×3 conv (like baseline)
+        self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=True)
 
-        # Second 3×3 conv
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=not use_bn)
-        self.bn2 = nn.BatchNorm2d(channels) if use_bn else nn.Identity()
-
-        # Activation (SiLU is fused with BN by HTP)
-        self.act = nn.SiLU(inplace=True)
+        # PReLU activation (baseline-compatible)
+        self.act = nn.PReLU(num_parameters=channels)
 
     def forward(self, x):
         identity = x
 
-        # First conv block
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.act(out)
-
-        # Second conv block
-        out = self.conv2(out)
-        out = self.bn2(out)
+        # Conv + activation
+        out = self.conv(x)
         out = self.act(out)
 
         # Residual connection
@@ -69,25 +58,25 @@ class YOLOBottleneck(nn.Module):
 @ARCH_REGISTRY.register()
 class SRVGGNetMobile(nn.Module):
     """
-    Mobile SR network with YOLO-style Bottleneck blocks.
+    Mobile SR network with Simple Residual blocks.
     Optimized for Qualcomm QCS8550 HTP edge device.
 
     Architecture:
-        Input → Head (Conv 3×3 + BN + SiLU) → Body (N × YOLO Bottleneck) → Tail (Conv 3×3 + PixelShuffle) → Output
+        Input → Head (Conv 3×3 + PReLU) → Body (N × Simple Residual blocks) → Tail (Conv 3×3 + PixelShuffle) → Output
 
-    Key features (proven in YOLOv8 @ 250 FPS on same hardware):
-    - YOLO bottleneck: 2 × 3×3 conv blocks (HTP-optimized)
-    - BatchNorm + SiLU fusion by HTP compiler
-    - No 1×1 convolutions (avoids HTP bottleneck)
+    Key features (baseline-compatible design):
+    - Simple residual: single 3×3 conv per block (same as baseline)
+    - PReLU activation (proven @ 60 FPS in baseline)
+    - No BatchNorm (no overhead)
+    - Residual connections (better training stability)
     - Power-of-2 channels for hardware alignment
 
     Args:
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
         num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of YOLO bottleneck blocks (default: 8)
+        num_conv: Number of simple residual blocks (default: 8)
         upscale: Upscale factor (default: 2)
-        use_bn: Use BatchNorm for HTP fusion (default: True)
     """
     def __init__(self,
                  num_in_ch: int = 1,
@@ -95,8 +84,8 @@ class SRVGGNetMobile(nn.Module):
                  num_feat: int = 32,
                  num_conv: int = 8,
                  upscale: int = 2,
-                 use_bn: bool = True,
                  # Legacy parameters for backward compatibility (ignored)
+                 use_bn: bool = None,
                  expansion: float = None,
                  attention_freq: int = None,
                  act_type: str = None):
@@ -107,18 +96,16 @@ class SRVGGNetMobile(nn.Module):
         self.num_feat = num_feat
         self.num_conv = num_conv
         self.upscale = upscale
-        self.use_bn = use_bn
 
-        # Head: expand to feature channels with BN + SiLU
+        # Head: expand to feature channels with PReLU (baseline-compatible)
         self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=not use_bn),
-            nn.BatchNorm2d(num_feat) if use_bn else nn.Identity(),
-            nn.SiLU(inplace=True)
+            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.PReLU(num_parameters=num_feat)
         )
 
-        # Body: YOLO bottleneck blocks
+        # Body: Simple residual blocks
         self.body = nn.Sequential(*[
-            YOLOBottleneck(num_feat, use_bn=use_bn) for _ in range(num_conv)
+            SimpleResidualBlock(num_feat) for _ in range(num_conv)
         ])
 
         # Tail: project to output channels and upsample
@@ -159,9 +146,8 @@ class SRVGGNetMobileInfer(nn.Module):
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
         num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of YOLO bottleneck blocks (default: 8)
+        num_conv: Number of simple residual blocks (default: 8)
         upscale: Upscale factor (default: 2)
-        use_bn: Use BatchNorm for HTP fusion (default: True)
     """
     def __init__(self,
                  num_in_ch: int = 1,
@@ -169,8 +155,8 @@ class SRVGGNetMobileInfer(nn.Module):
                  num_feat: int = 32,
                  num_conv: int = 8,
                  upscale: int = 2,
-                 use_bn: bool = True,
                  # Legacy parameters for backward compatibility (ignored)
+                 use_bn: bool = None,
                  expansion: float = None,
                  attention_freq: int = None,
                  act_type: str = None):
@@ -181,18 +167,16 @@ class SRVGGNetMobileInfer(nn.Module):
         self.num_feat = num_feat
         self.num_conv = num_conv
         self.upscale = upscale
-        self.use_bn = use_bn
 
-        # Head: expand to feature channels with BN + SiLU
+        # Head: expand to feature channels with PReLU (baseline-compatible)
         self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=not use_bn),
-            nn.BatchNorm2d(num_feat) if use_bn else nn.Identity(),
-            nn.SiLU(inplace=True)
+            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.PReLU(num_parameters=num_feat)
         )
 
-        # Body: YOLO bottleneck blocks
+        # Body: Simple residual blocks
         self.body = nn.Sequential(*[
-            YOLOBottleneck(num_feat, use_bn=use_bn) for _ in range(num_conv)
+            SimpleResidualBlock(num_feat) for _ in range(num_conv)
         ])
 
         # Tail: project to output channels and upsample
@@ -213,10 +197,10 @@ class SRVGGNetMobileInfer(nn.Module):
         feat = self.head(x)
         feat = self.body(feat)
         out = self.tail(feat)
-        # out = self.upsampler(out)
+        out = self.upsampler(out)
 
         # Global residual connection
-        # out = out + base
+        out = out + base
 
         # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
