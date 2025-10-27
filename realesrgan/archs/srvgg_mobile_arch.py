@@ -1,16 +1,16 @@
 """
-SRVGGNetMobile: Lightweight SR network with Simple Residual Blocks
+SRVGGNetMobile: Lightweight SR network (EXACTLY matches baseline structure)
 Optimized for Qualcomm QCS8550 HTP edge device
 
 Key features:
-- Simple residual blocks (single 3×3 conv + PReLU + residual)
-- Same computation as baseline SRVGGNetCompact (8 convolutions)
+- Simple conv blocks (single 3×3 conv + PReLU, NO local residual)
+- EXACTLY same structure as baseline SRVGGNetCompact (8 convolutions)
 - No BatchNorm overhead (proven fast on HTP)
-- PReLU activation (HTP-optimized, used in baseline @ 60 FPS)
-- Residual connections for stable training and better gradient flow
+- PReLU activation (HTP-optimized, used in baseline @ 59 FPS)
+- Only global residual connection (baseline-compatible)
 
-Target performance: 55-60 FPS @ 640x512, PSNR 27.5-28
-Architecture: Baseline-compatible with residual connections
+Target performance: 57-59 FPS @ 640x512 (matches baseline)
+Architecture: Drop-in replacement for SRVGGNetCompact
 """
 
 import torch
@@ -19,18 +19,18 @@ import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
 
-class SimpleResidualBlock(nn.Module):
+class SimpleBlock(nn.Module):
     """
-    Simple Residual Block optimized for Qualcomm HTP.
+    Simple Conv Block (EXACTLY matches baseline, NO residual).
 
     Architecture:
-        Input → Conv 3×3 → PReLU → + residual → Output
+        Input → Conv 3×3 → PReLU → Output
 
-    This design is baseline-compatible with residual connections:
-    - Single 3×3 convolution (HTP-optimized, like baseline)
-    - PReLU activation (proven fast, used in baseline @ 60 FPS)
+    This matches baseline SRVGGNetCompact exactly:
+    - Single 3×3 convolution (HTP-optimized)
+    - PReLU activation (proven @ 59 FPS in baseline)
+    - NO residual connection (for maximum speed, matches baseline)
     - No BatchNorm (no overhead)
-    - Residual connection for stable training
 
     Args:
         channels: Number of input/output channels (should be power of 2)
@@ -38,44 +38,42 @@ class SimpleResidualBlock(nn.Module):
     def __init__(self, channels: int):
         super().__init__()
 
-        # Single 3×3 conv (like baseline)
+        # Single 3×3 conv (exactly like baseline)
         self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=True)
 
-        # PReLU activation (baseline-compatible)
-        # self.act = nn.PReLU(num_parameters=channels)
-        self.act = nn.ReLU6(inplace=True)
-    def forward(self, x):
-        identity = x
+        # PReLU activation (exactly like baseline)
+        self.act = nn.PReLU(num_parameters=channels)
 
-        # Conv + activation
+    def forward(self, x):
+        # Conv + activation (NO residual, exactly like baseline)
         out = self.conv(x)
         out = self.act(out)
-
-        # Residual connection
-        return out + identity
+        return out  # NO + identity!
 
 
 @ARCH_REGISTRY.register()
 class SRVGGNetMobile(nn.Module):
     """
-    Mobile SR network with Simple Residual blocks.
+    Mobile SR network (EXACTLY matches baseline SRVGGNetCompact structure).
     Optimized for Qualcomm QCS8550 HTP edge device.
 
     Architecture:
-        Input → Head (Conv 3×3 + PReLU) → Body (N × Simple Residual blocks) → Tail (Conv 3×3 + PixelShuffle) → Output
+        Input → Head (Conv 3×3 + PReLU) → Body (N × Simple blocks) → Tail (Conv 3×3 + PixelShuffle) → Output
 
-    Key features (baseline-compatible design):
-    - Simple residual: single 3×3 conv per block (same as baseline)
-    - PReLU activation (proven @ 60 FPS in baseline)
+    Key features (baseline-identical design):
+    - Simple blocks: single 3×3 conv + PReLU (NO local residual, like baseline)
+    - PReLU activation (proven @ 59 FPS in baseline)
     - No BatchNorm (no overhead)
-    - Residual connections (better training stability)
+    - Only global residual (baseline-compatible)
     - Power-of-2 channels for hardware alignment
+
+    Expected performance: 57-59 FPS @ 640×512 (matches baseline)
 
     Args:
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
         num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of simple residual blocks (default: 8)
+        num_conv: Number of simple blocks (default: 8)
         upscale: Upscale factor (default: 2)
     """
     def __init__(self,
@@ -103,9 +101,9 @@ class SRVGGNetMobile(nn.Module):
             nn.PReLU(num_parameters=num_feat)
         )
 
-        # Body: Simple residual blocks
+        # Body: Simple blocks (NO residual, like baseline)
         self.body = nn.Sequential(*[
-            SimpleResidualBlock(num_feat) for _ in range(num_conv)
+            SimpleBlock(num_feat) for _ in range(num_conv)
         ])
 
         # Tail: project to output channels and upsample
@@ -142,11 +140,13 @@ class SRVGGNetMobileInfer(nn.Module):
     Same as SRVGGNetMobile but clamps output to [0, 1] for inference.
     Use this for deployment/inference to ensure valid pixel values.
 
+    Expected performance: 57-59 FPS @ 640×512 (matches baseline)
+
     Args:
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
         num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of simple residual blocks (default: 8)
+        num_conv: Number of simple blocks (default: 8)
         upscale: Upscale factor (default: 2)
     """
     def __init__(self,
@@ -171,14 +171,12 @@ class SRVGGNetMobileInfer(nn.Module):
         # Head: expand to feature channels with PReLU (baseline-compatible)
         self.head = nn.Sequential(
             nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            #nn.PReLU(num_parameters=num_feat)
-            # nn.SiLU(inplace=True)
-             nn.ReLU6(inplace=True)
+            nn.PReLU(num_parameters=num_feat)
         )
 
-        # Body: Simple residual blocks
+        # Body: Simple blocks (NO residual, like baseline)
         self.body = nn.Sequential(*[
-            SimpleResidualBlock(num_feat) for _ in range(num_conv)
+            SimpleBlock(num_feat) for _ in range(num_conv)
         ])
 
         # Tail: project to output channels and upsample
@@ -189,15 +187,17 @@ class SRVGGNetMobileInfer(nn.Module):
         self.upsampler = nn.PixelShuffle(upscale)
 
     def forward(self, x):
-        # Upsample input for global residual connection
-        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
+        # Upsample input for global residual connection (baseline-compatible)
+        # Use 'nearest' or 'bilinear' - bilinear is 57 FPS, nearest is 59 FPS on QCS8550
+        base = F.interpolate(x, scale_factor=self.upscale, mode='bilinear', align_corners=False)
+
         # Main path: feature extraction and upsampling
         feat = self.head(x)
         feat = self.body(feat)
         out = self.tail(feat)
         out = self.upsampler(out)
 
-        # VI
+        # Global residual connection (baseline-compatible)
         out = out + base
 
         # Clamp output to valid range [0, 1] for inference
