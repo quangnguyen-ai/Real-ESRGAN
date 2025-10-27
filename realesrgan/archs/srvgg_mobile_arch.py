@@ -130,16 +130,16 @@ class SRVGGNetMobile(nn.Module):
 
     def forward(self, x):
         # Upsample input for global residual connection
-        base = F.interpolate(
-            x, scale_factor=self.upscale,
-            mode='bilinear', align_corners=False
-        )
+        # base = F.interpolate(
+        #     x, scale_factor=self.upscale,
+        #     mode='bilinear', align_corners=False
+        # )
 
         # Main path: feature extraction and upsampling
         feat = self.head(x)
         feat = self.body(feat)
         out = self.tail(feat)
-        # out = self.upsampler(out)
+        out = self.upsampler(out)
 
         # Global residual connection
         # out = out + base
