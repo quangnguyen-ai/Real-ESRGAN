@@ -200,7 +200,7 @@ class SRVGGNetMobileInfer(nn.Module):
         out = self.upsampler(out)
 
         # Global residual connection
-        out = out + base
+        # out = out + base
 
         # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
