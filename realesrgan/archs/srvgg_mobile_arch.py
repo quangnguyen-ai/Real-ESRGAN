@@ -190,7 +190,7 @@ class SRVGGNetMobileInfer(nn.Module):
         # Upsample input for global residual connection
         base = F.interpolate(
             x, scale_factor=self.upscale,
-            mode='bilinear', align_corners=False
+            mode='nearest', align_corners=False
         )
 
         # Main path: feature extraction and upsampling
@@ -200,7 +200,7 @@ class SRVGGNetMobileInfer(nn.Module):
         out = self.upsampler(out)
 
         # Global residual connection
-        # out = out + base
+        out = out + base
 
         # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
