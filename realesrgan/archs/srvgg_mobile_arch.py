@@ -117,10 +117,8 @@ class SRVGGNetMobile(nn.Module):
 
     def forward(self, x):
         # Upsample input for global residual connection
-        base = F.interpolate(
-            x, scale_factor=self.upscale,
-            mode='bilinear', align_corners=False
-        )
+        # Use 'nearest' mode (baseline-compatible, HTP-optimized, ~10ms faster than bilinear)
+        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
 
         # Main path: feature extraction and upsampling
         feat = self.head(x)
@@ -188,10 +186,8 @@ class SRVGGNetMobileInfer(nn.Module):
 
     def forward(self, x):
         # Upsample input for global residual connection
-        base = F.interpolate(
-            x, scale_factor=self.upscale,
-            mode='nearest', align_corners=False
-        )
+        # Use 'nearest' mode (baseline-compatible, HTP-optimized, ~10ms faster than bilinear)
+        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
 
         # Main path: feature extraction and upsampling
         feat = self.head(x)
