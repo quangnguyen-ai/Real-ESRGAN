@@ -139,10 +139,10 @@ class SRVGGNetMobile(nn.Module):
         feat = self.head(x)
         feat = self.body(feat)
         out = self.tail(feat)
-        out = self.upsampler(out)
+        # out = self.upsampler(out)
 
         # Global residual connection
-        out = out + base
+        # out = out + base
 
         return out
 
