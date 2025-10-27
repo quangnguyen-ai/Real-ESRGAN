@@ -3,6 +3,13 @@ from torch import nn as nn
 from torch.nn import functional as F
 import torch
 
+# Import mobile architectures for backward compatibility
+from realesrgan.archs.srvgg_mobile_arch import (
+    SRVGGNetMobile,
+    SRVGGNetMobileInfer,
+    SRVGGNetHybrid
+)
+
 @ARCH_REGISTRY.register()
 class SRVGGNetCompact(nn.Module):
     """A compact VGG-style network structure for super-resolution.
