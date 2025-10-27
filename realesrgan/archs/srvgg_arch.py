@@ -136,8 +136,8 @@ class SRVGGNetCompactInfer(nn.Module):
 
         out = self.upsampler(out)
         # add the nearest upsampled image, so that the network learns the residual
-        # base = F.interpolate(x, scale_factor=self.upscale, mode='bilinear',align_corners=False)
-        # out += base
-        out = out + out
+        base = F.interpolate(x, scale_factor=self.upscale, mode='nearest')
+        out += base
+        # out = out + out
         out = torch.clamp(out, 0.0, 1.0)
         return out
