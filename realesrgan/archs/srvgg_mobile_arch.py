@@ -1,14 +1,15 @@
 """
-SRVGGNetMobile: Lightweight SR network with Inverted Residual Blocks
-Optimized for edge devices (Qualcomm QCS8550 HTP)
+SRVGGNetMobile: Lightweight SR network with YOLO-optimized Bottleneck Blocks
+Optimized for Qualcomm QCS8550 HTP edge device
 
 Key features:
-- Inverted Residual blocks (MobileNetV2 style) for rich feature extraction
-- ECA attention for quality boost with minimal overhead
-- Optimized for 1-channel IR images on edge devices
+- YOLO-style bottleneck blocks (2 × 3×3 conv with residual)
+- BatchNorm + SiLU fusion (HTP-optimized, proven in YOLOv8 @ 250 FPS)
+- No 1×1 convolutions (avoids HTP bottleneck)
+- Power-of-2 channels for hardware alignment
 
-Target performance: 60-68 FPS @ 640x512, PSNR ~28
-Architecture: narrow→wide→narrow with residual connections
+Target performance: 45-60 FPS @ 640x512, PSNR 27.5-28
+Architecture: Inspired by YOLOv8's efficient blocks
 """
 
 import torch
@@ -17,118 +18,49 @@ import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
 
-def make_activation(act_type: str, num_channels: int = None):
+class YOLOBottleneck(nn.Module):
     """
-    Create activation layer.
-
-    Args:
-        act_type: 'relu', 'leakyrelu', 'prelu'
-        num_channels: Required for prelu
-    """
-    if act_type == 'relu':
-        return nn.ReLU(inplace=True)
-    elif act_type == 'leakyrelu':
-        return nn.LeakyReLU(0.2, inplace=True)
-    elif act_type == 'prelu':
-        if num_channels is None:
-            raise ValueError('num_channels required for prelu')
-        return nn.PReLU(num_parameters=num_channels)
-    else:
-        raise ValueError(f'Unsupported activation: {act_type}')
-
-
-class ECAAttention(nn.Module):
-    """
-    Efficient Channel Attention (ECA) - lightweight attention mechanism.
-
-    Only 5 parameters, <1% overhead, but significant quality improvement.
-    Paper: ECA-Net (CVPR 2020)
-
-    Args:
-        channels: Number of input channels
-        k_size: Adaptive kernel size for 1D conv (default: 3)
-    """
-    def __init__(self, channels: int, k_size: int = 3):
-        super().__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.conv = nn.Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        # Global average pooling: [B, C, H, W] -> [B, C, 1, 1]
-        y = self.avg_pool(x)
-
-        # 1D convolution along channel dimension: [B, C, 1, 1] -> [B, 1, C] -> [B, 1, C] -> [B, C, 1, 1]
-        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
-
-        # Sigmoid activation for channel weights
-        y = self.sigmoid(y)
-
-        # Apply attention weights
-        return x * y.expand_as(x)
-
-
-class InvertedResidualBlock(nn.Module):
-    """
-    Inverted Residual Block (MobileNetV2 style) for super-resolution.
+    YOLO-style Bottleneck block optimized for Qualcomm HTP.
 
     Architecture:
-        Input (narrow) → Expand 1×1 (wide) → DW 3×3 → Project 1×1 (narrow) + residual
+        Input → Conv 3×3 + BN + SiLU → Conv 3×3 + BN + SiLU → + residual
 
-    This design allows DW conv to work on richer feature space while keeping
-    input/output narrow for efficiency.
+    This design is proven efficient on QCS8550 (YOLOv8 achieves 250 FPS):
+    - Uses only 3×3 convolutions (HTP-optimized)
+    - BatchNorm + SiLU fusion by HTP compiler
+    - No 1×1 convs (which are slow on HTP)
+    - Residual connection for stable training
 
     Args:
-        num_channels: Number of input/output channels (narrow width)
-        expansion: Expansion ratio (typically 2-4)
-        act_type: Activation type
-        use_attention: Whether to use ECA attention
+        channels: Number of input/output channels (should be power of 2)
+        use_bn: Whether to use BatchNorm (default: True for inference optimization)
     """
-    def __init__(self,
-                 num_channels: int,
-                 expansion: float = 2.5,
-                 act_type: str = 'prelu',
-                 use_attention: bool = False):
+    def __init__(self, channels: int, use_bn: bool = True):
         super().__init__()
 
-        hidden_channels = int(num_channels * expansion)
+        # First 3×3 conv
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=not use_bn)
+        self.bn1 = nn.BatchNorm2d(channels) if use_bn else nn.Identity()
 
-        # Expand: narrow → wide
-        self.expand = nn.Sequential(
-            nn.Conv2d(num_channels, hidden_channels, kernel_size=1, stride=1, padding=0, bias=True),
-            make_activation(act_type, hidden_channels)
-        )
+        # Second 3×3 conv
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=not use_bn)
+        self.bn2 = nn.BatchNorm2d(channels) if use_bn else nn.Identity()
 
-        # Depthwise: spatial processing on wide features
-        self.depthwise = nn.Sequential(
-            nn.Conv2d(
-                hidden_channels, hidden_channels,
-                kernel_size=3, stride=1, padding=1,
-                groups=hidden_channels, bias=True
-            ),
-            make_activation(act_type, hidden_channels)
-        )
-
-        # Project: wide → narrow
-        self.project = nn.Conv2d(
-            hidden_channels, num_channels,
-            kernel_size=1, stride=1, padding=0, bias=True
-        )
-
-        # Optional attention
-        self.attention = ECAAttention(num_channels) if use_attention else None
+        # Activation (SiLU is fused with BN by HTP)
+        self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
         identity = x
 
-        # Inverted residual path
-        out = self.expand(x)
-        out = self.depthwise(out)
-        out = self.project(out)
+        # First conv block
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.act(out)
 
-        # Apply attention if enabled
-        if self.attention is not None:
-            out = self.attention(out)
+        # Second conv block
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.act(out)
 
         # Residual connection
         return out + identity
@@ -137,65 +69,57 @@ class InvertedResidualBlock(nn.Module):
 @ARCH_REGISTRY.register()
 class SRVGGNetMobile(nn.Module):
     """
-    Mobile SR network with Inverted Residual blocks (MobileNetV2 style).
+    Mobile SR network with YOLO-style Bottleneck blocks.
     Optimized for Qualcomm QCS8550 HTP edge device.
 
     Architecture:
-        Input → Head (3×3 conv) → Body (N × Inverted Residual blocks) → Tail (3×3 + PixelShuffle) → Output
+        Input → Head (Conv 3×3 + BN + SiLU) → Body (N × YOLO Bottleneck) → Tail (Conv 3×3 + PixelShuffle) → Output
 
-    Key improvements over pure depthwise separable:
-    - Inverted residual: narrow→wide→narrow for richer feature extraction
-    - ECA attention: every 4 blocks for quality boost
-    - Better receptive field and cross-channel mixing
+    Key features (proven in YOLOv8 @ 250 FPS on same hardware):
+    - YOLO bottleneck: 2 × 3×3 conv blocks (HTP-optimized)
+    - BatchNorm + SiLU fusion by HTP compiler
+    - No 1×1 convolutions (avoids HTP bottleneck)
+    - Power-of-2 channels for hardware alignment
 
     Args:
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
-        num_feat: Number of feature channels - narrow width (default: 40)
-        num_conv: Number of inverted residual blocks (default: 12)
-        expansion: Expansion ratio for inverted residual (default: 2.5)
-        attention_freq: Add ECA attention every N blocks (0=disable, default: 4)
+        num_feat: Number of feature channels (default: 32, must be power of 2)
+        num_conv: Number of YOLO bottleneck blocks (default: 8)
         upscale: Upscale factor (default: 2)
-        act_type: Activation type ('relu', 'leakyrelu', 'prelu')
+        use_bn: Use BatchNorm for HTP fusion (default: True)
     """
     def __init__(self,
                  num_in_ch: int = 1,
                  num_out_ch: int = 1,
-                 num_feat: int = 40,
-                 num_conv: int = 12,
-                 expansion: float = 2.5,
-                 attention_freq: int = 4,
+                 num_feat: int = 32,
+                 num_conv: int = 8,
                  upscale: int = 2,
-                 act_type: str = 'prelu'):
+                 use_bn: bool = True,
+                 # Legacy parameters for backward compatibility (ignored)
+                 expansion: float = None,
+                 attention_freq: int = None,
+                 act_type: str = None):
         super().__init__()
 
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
         self.num_feat = num_feat
         self.num_conv = num_conv
-        self.expansion = expansion
-        self.attention_freq = attention_freq
         self.upscale = upscale
-        self.act_type = act_type
+        self.use_bn = use_bn
 
-        # Head: expand to feature channels
+        # Head: expand to feature channels with BN + SiLU
         self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            make_activation(act_type, num_feat)
+            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=not use_bn),
+            nn.BatchNorm2d(num_feat) if use_bn else nn.Identity(),
+            nn.SiLU(inplace=True)
         )
 
-        # Body: inverted residual blocks with periodic attention
-        body = []
-        for i in range(num_conv):
-            # Add attention every N blocks (if enabled)
-            use_attention = (attention_freq > 0) and ((i + 1) % attention_freq == 0)
-            body.append(InvertedResidualBlock(
-                num_channels=num_feat,
-                expansion=expansion,
-                act_type=act_type,
-                use_attention=use_attention
-            ))
-        self.body = nn.Sequential(*body)
+        # Body: YOLO bottleneck blocks
+        self.body = nn.Sequential(*[
+            YOLOBottleneck(num_feat, use_bn=use_bn) for _ in range(num_conv)
+        ])
 
         # Tail: project to output channels and upsample
         self.tail = nn.Conv2d(
@@ -203,19 +127,6 @@ class SRVGGNetMobile(nn.Module):
             kernel_size=3, stride=1, padding=1, bias=True
         )
         self.upsampler = nn.PixelShuffle(upscale)
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights with Kaiming normal for stable training."""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.PReLU):
-                nn.init.constant_(m.weight, 0.25)
 
     def forward(self, x):
         # Upsample input for global residual connection
@@ -247,51 +158,42 @@ class SRVGGNetMobileInfer(nn.Module):
     Args:
         num_in_ch: Number of input channels (default: 1 for IR)
         num_out_ch: Number of output channels (default: 1 for IR)
-        num_feat: Number of feature channels - narrow width (default: 40)
-        num_conv: Number of inverted residual blocks (default: 12)
-        expansion: Expansion ratio for inverted residual (default: 2.5)
-        attention_freq: Add ECA attention every N blocks (0=disable, default: 4)
+        num_feat: Number of feature channels (default: 32, must be power of 2)
+        num_conv: Number of YOLO bottleneck blocks (default: 8)
         upscale: Upscale factor (default: 2)
-        act_type: Activation type ('relu', 'leakyrelu', 'prelu')
+        use_bn: Use BatchNorm for HTP fusion (default: True)
     """
     def __init__(self,
                  num_in_ch: int = 1,
                  num_out_ch: int = 1,
                  num_feat: int = 32,
-                 num_conv: int = 12,
-                 expansion: float = 2.0,
-                 attention_freq: int = 0,
+                 num_conv: int = 8,
                  upscale: int = 2,
-                 act_type: str = 'prelu'):
+                 use_bn: bool = True,
+                 # Legacy parameters for backward compatibility (ignored)
+                 expansion: float = None,
+                 attention_freq: int = None,
+                 act_type: str = None):
         super().__init__()
 
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
         self.num_feat = num_feat
         self.num_conv = num_conv
-        self.expansion = expansion
-        self.attention_freq = attention_freq
         self.upscale = upscale
-        self.act_type = act_type
+        self.use_bn = use_bn
 
-        # Head: expand to feature channels
+        # Head: expand to feature channels with BN + SiLU
         self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            make_activation(act_type, num_feat)
+            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=not use_bn),
+            nn.BatchNorm2d(num_feat) if use_bn else nn.Identity(),
+            nn.SiLU(inplace=True)
         )
 
-        # Body: inverted residual blocks with periodic attention
-        body = []
-        for i in range(num_conv):
-            # Add attention every N blocks (if enabled)
-            use_attention = (attention_freq > 0) and ((i + 1) % attention_freq == 0)
-            body.append(InvertedResidualBlock(
-                num_channels=num_feat,
-                expansion=expansion,
-                act_type=act_type,
-                use_attention=use_attention
-            ))
-        self.body = nn.Sequential(*body)
+        # Body: YOLO bottleneck blocks
+        self.body = nn.Sequential(*[
+            YOLOBottleneck(num_feat, use_bn=use_bn) for _ in range(num_conv)
+        ])
 
         # Tail: project to output channels and upsample
         self.tail = nn.Conv2d(
@@ -299,19 +201,6 @@ class SRVGGNetMobileInfer(nn.Module):
             kernel_size=3, stride=1, padding=1, bias=True
         )
         self.upsampler = nn.PixelShuffle(upscale)
-
-        # Initialize weights
-        self._init_weights()
-
-    def _init_weights(self):
-        """Initialize weights with Kaiming normal for stable training."""
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.PReLU):
-                nn.init.constant_(m.weight, 0.25)
 
     def forward(self, x):
         # Upsample input for global residual connection
