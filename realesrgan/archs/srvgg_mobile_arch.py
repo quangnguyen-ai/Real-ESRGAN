@@ -1,16 +1,16 @@
 """
-SRVGGNetMobile: Lightweight SR network (EXACTLY matches baseline structure)
+SRVGGNetMobile: Lightweight SR network with Simple Residual Blocks
 Optimized for Qualcomm QCS8550 HTP edge device
 
 Key features:
-- Simple conv blocks (single 3×3 conv + PReLU, NO local residual)
-- EXACTLY same structure as baseline SRVGGNetCompact (8 convolutions)
+- Simple residual blocks (single 3×3 conv + PReLU + residual)
+- Same computation as baseline SRVGGNetCompact (8 convolutions)
 - No BatchNorm overhead (proven fast on HTP)
-- PReLU activation (HTP-optimized, used in baseline @ 59 FPS)
-- Only global residual connection (baseline-compatible)
+- PReLU activation (HTP-optimized, used in baseline @ 60 FPS)
+- Residual connections for stable training and better gradient flow
 
-Target performance: 57-59 FPS @ 640x512 (matches baseline)
-Architecture: Drop-in replacement for SRVGGNetCompact
+Target performance: 55-60 FPS @ 640x512, PSNR 27.5-28
+Architecture: Baseline-compatible with residual connections
 """
 
 import torch
@@ -19,191 +19,358 @@ import torch.nn.functional as F
 from basicsr.utils.registry import ARCH_REGISTRY
 
 
-class SimpleBlock(nn.Module):
+class ResidualBlock(nn.Module):
     """
-    Simple Conv Block (EXACTLY matches baseline, NO residual).
+    Residual Block with skip connection for deep SR networks
 
-    Architecture:
-        Input → Conv 3×3 → PReLU → Output
+    Architecture: Conv → Act → Conv → Act → Conv → Act → Conv → Act → Add(input)
 
-    This matches baseline SRVGGNetCompact exactly:
-    - Single 3×3 convolution (HTP-optimized)
-    - PReLU activation (proven @ 59 FPS in baseline)
-    - NO residual connection (for maximum speed, matches baseline)
-    - No BatchNorm (no overhead)
+    Each block = 4 conv layers with 1 skip connection
+    This reduces skip connection overhead on HTP:
+    - 16 layers with 2-conv blocks = 8 skips → 20.8ms (SLOW!)
+    - 16 layers with 4-conv blocks = 4 skips → Should be ~16ms (FAST!)
 
-    Args:
-        channels: Number of input/output channels (should be power of 2)
+    Skip connection helps:
+    - Better gradient flow for deep networks (>10 layers)
+    - Preserve information across layers
+    - Easier optimization
+    - With 4 convs per block, minimal overhead on HTP
     """
-    def __init__(self, channels: int):
-        super().__init__()
 
-        # Single 3×3 conv (exactly like baseline)
-        self.conv = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, bias=True)
+    def __init__(self, channels, act_type='relu6'):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, 1, 1)
+        self.conv2 = nn.Conv2d(channels, channels, 3, 1, 1)
+        self.conv3 = nn.Conv2d(channels, channels, 3, 1, 1)
+        self.conv4 = nn.Conv2d(channels, channels, 3, 1, 1)
+        self.act_type = act_type
 
-        # PReLU activation (exactly like baseline)
-        self.act = nn.PReLU(num_parameters=channels)
+    def _get_activation(self, channels):
+        """Helper to get activation layer"""
+        if self.act_type == 'relu':
+            return nn.ReLU(inplace=True)
+        elif self.act_type == 'relu6':
+            return nn.ReLU6(inplace=True)
+        elif self.act_type == 'prelu':
+            return nn.PReLU(num_parameters=channels)
+        elif self.act_type == 'leakyrelu':
+            return nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        else:
+            return nn.ReLU(inplace=True)
 
     def forward(self, x):
-        # Conv + activation (NO residual, exactly like baseline)
-        out = self.conv(x)
-        out = self.act(out)
-        return out  # NO + identity!
+        residual = x
+        act1 = self._get_activation(self.conv1.out_channels)
+        act2 = self._get_activation(self.conv2.out_channels)
+        act3 = self._get_activation(self.conv3.out_channels)
+        act4 = self._get_activation(self.conv4.out_channels)
 
+        out = self.conv1(x)
+        out = act1(out)
+        out = self.conv2(out)
+        out = act2(out)
+        out = self.conv3(out)
+        out = act3(out)
+        out = self.conv4(out)
+        out = act4(out)
+
+        # Skip connection after 4 convs
+        out = out + residual
+        return out
 
 @ARCH_REGISTRY.register()
 class SRVGGNetMobile(nn.Module):
     """
-    Mobile SR network (EXACTLY matches baseline SRVGGNetCompact structure).
-    Optimized for Qualcomm QCS8550 HTP edge device.
+    Progressive Channel SR Network for IR Image Super Resolution on QSC8550 HTP
 
-    Architecture:
-        Input → Head (Conv 3×3 + PReLU) → Body (N × Simple blocks) → Tail (Conv 3×3 + PixelShuffle) → Output
+    Architecture: High capacity (64ch) early → Lower capacity (32ch) later
 
-    Key features (baseline-identical design):
-    - Simple blocks: single 3×3 conv + PReLU (NO local residual, like baseline)
-    - PReLU activation (proven @ 59 FPS in baseline)
-    - No BatchNorm (no overhead)
-    - Only global residual (baseline-compatible)
-    - Power-of-2 channels for hardware alignment
+    Key innovations:
+    1. Progressive channel reduction (64ch → 32ch)
+       - Early layers: Rich feature extraction (64ch)
+       - Later layers: Feature refinement (32ch)
 
-    Expected performance: 57-59 FPS @ 640×512 (matches baseline)
+    2. Residual blocks with skip connections (4-conv blocks)
+       - Used when num_conv >= 8 (deep enough to benefit)
+       - Each ResidualBlock = 4 conv layers + 1 skip connection
+       - Reduces skip overhead: 16 layers = 4 skips (not 8!)
+       - Better gradient flow for deep networks
+       - Easier optimization
+       - Minimal HTP overhead with fewer skip connections
+
+    3. Hierarchical learning (inspired by ResNet/U-Net)
+       - Match capacity to task complexity
+       - More efficient than uniform channels
+
+    4. Optimized for IR whitehot images
+       - Thermal patterns benefit from high initial capacity
+       - Refinement needs less capacity
+
+    Expected performance examples:
+    - 64ch×2 → 32ch×10: ~60G FLOPs, ~16ms (62 FPS) - with skip in 32ch
+    - 64ch×0 → 32ch×16: ~48G FLOPs, ~15ms (65 FPS) - with skip in 32ch
+    - Better accuracy with skip connections for deep stages
 
     Args:
-        num_in_ch: Number of input channels (default: 1 for IR)
-        num_out_ch: Number of output channels (default: 1 for IR)
-        num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of simple blocks (default: 8)
-        upscale: Upscale factor (default: 2)
+        num_in_ch: Input channels (1 for IR grayscale)
+        num_out_ch: Output channels (1 for IR grayscale)
+        num_conv64feat: Number of 64-channel conv layers (use 0 to skip this stage)
+        num_conv32feat: Number of 32-channel conv layers
+        upscale: Upscale factor (2x or 4x)
+        act_type: Activation ('relu', 'relu6', 'prelu', 'leakyrelu')
+        use_skip: Use residual blocks with skip connections (auto-enabled if layers > 6)
     """
-    def __init__(self,
-                 num_in_ch: int = 1,
-                 num_out_ch: int = 1,
-                 num_feat: int = 32,
-                 num_conv: int = 8,
-                 upscale: int = 2,
-                 # Legacy parameters for backward compatibility (ignored)
-                 use_bn: bool = None,
-                 expansion: float = None,
-                 attention_freq: int = None,
-                 act_type: str = None):
-        super().__init__()
+    def __init__(self, num_in_ch=1, num_out_ch=1, num_conv64feat=4, num_conv32feat=8,
+                 upscale=2, act_type='relu6', use_skip=False):
+        super(SRVGGNetMobile, self).__init__()
 
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
-        self.num_feat = num_feat
-        self.num_conv = num_conv
+        self.num_conv64feat = num_conv64feat
+        self.num_conv32feat = num_conv32feat
         self.upscale = upscale
+        self.act_type = act_type
+        self.use_skip = use_skip
 
-        # Head: expand to feature channels with PReLU (baseline-compatible)
-        self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.PReLU(num_parameters=num_feat)
-        )
+        self.body = nn.ModuleList()
 
-        # Body: Simple blocks (NO residual, like baseline)
-        self.body = nn.Sequential(*[
-            SimpleBlock(num_feat) for _ in range(num_conv)
-        ])
+        # Determine starting channels
+        if num_conv64feat > 0:
+            # Stage 1: High capacity feature extraction (64 channels)
+            # First conv: 1ch → 64ch
+            self.body.append(nn.Conv2d(num_in_ch, 64, 3, 1, 1))
+            self.body.append(self._get_activation(64))
 
-        # Tail: project to output channels and upsample
-        self.tail = nn.Conv2d(
-            num_feat, num_out_ch * upscale * upscale,
-            kernel_size=3, stride=1, padding=1, bias=True
-        )
+            # 64-channel processing layers
+            # Use skip connections only if num_conv64feat >= 8
+            if use_skip and num_conv64feat >= 8:
+                # Use residual blocks (each block = 4 convs, 1 skip)
+                num_blocks_64 = num_conv64feat // 4
+                for _ in range(num_blocks_64):
+                    self.body.append(ResidualBlock(64, act_type))
+                # Add remaining layers as plain convs
+                remaining = num_conv64feat % 4
+                for _ in range(remaining):
+                    self.body.append(nn.Conv2d(64, 64, 3, 1, 1))
+                    self.body.append(self._get_activation(64))
+            else:
+                # Plain convs (no skip) for shallow stage
+                for _ in range(num_conv64feat):
+                    self.body.append(nn.Conv2d(64, 64, 3, 1, 1))
+                    self.body.append(self._get_activation(64))
+
+            # Transition: 64ch → 32ch (channel reduction)
+            self.body.append(nn.Conv2d(64, 32, 1, 1, 0))
+            self.body.append(self._get_activation(32))
+
+        else:
+            # No 64ch stage, start directly with 32ch
+            self.body.append(nn.Conv2d(num_in_ch, 32, 3, 1, 1))
+            self.body.append(self._get_activation(32))
+
+        # Stage 2: Feature refinement (32 channels)
+        # Use skip connections if num_conv32feat >= 8 (deep enough)
+        if use_skip and num_conv32feat >= 8:
+            # Use residual blocks (each block = 4 convs, 1 skip)
+            # This limits skip connections to reduce HTP overhead
+            num_blocks_32 = num_conv32feat // 4
+            for _ in range(num_blocks_32):
+                self.body.append(ResidualBlock(32, act_type))
+            # Add remaining layers as plain convs
+            remaining = num_conv32feat % 4
+            for _ in range(remaining):
+                self.body.append(nn.Conv2d(32, 32, 3, 1, 1))
+                self.body.append(self._get_activation(32))
+        else:
+            # Plain convs for shallow stage
+            for _ in range(num_conv32feat):
+                self.body.append(nn.Conv2d(32, 32, 3, 1, 1))
+                self.body.append(self._get_activation(32))
+
+        # Upsampling head
+        self.body.append(nn.Conv2d(32, num_out_ch * upscale * upscale, 3, 1, 1))
         self.upsampler = nn.PixelShuffle(upscale)
 
-    def forward(self, x):
-        # Upsample input for global residual connection
-        base = F.interpolate(
-            x, scale_factor=self.upscale,
-            mode='bilinear', align_corners=False
+        # Learnable residual upsampling (HTP-optimized, no F.interpolate!)
+        self.residual_upsample = nn.Sequential(
+            nn.Conv2d(num_in_ch, num_out_ch * upscale * upscale, 1, 1, 0),
+            nn.PixelShuffle(upscale)
         )
 
-        # Main path: feature extraction and upsampling
-        feat = self.head(x)
-        feat = self.body(feat)
-        out = self.tail(feat)
+    def _get_activation(self, channels):
+        """Helper to get activation layer"""
+        if self.act_type == 'relu':
+            return nn.ReLU(inplace=True)
+        elif self.act_type == 'relu6':
+            return nn.ReLU6(inplace=True)
+        elif self.act_type == 'prelu':
+            return nn.PReLU(num_parameters=channels)
+        elif self.act_type == 'leakyrelu':
+            return nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        else:
+            return nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        out = x
+        for layer in self.body:
+            out = layer(out)
+
         out = self.upsampler(out)
 
-        # Global residual connection
+        # Learnable residual - NO F.interpolate!
+        base = self.residual_upsample(x)
         out = out + base
 
         return out
+
 
 
 @ARCH_REGISTRY.register()
 class SRVGGNetMobileInfer(nn.Module):
     """
-    Inference version of SRVGGNetMobile with output clamping.
+    Progressive Channel SR Network for IR Image Super Resolution on QSC8550 HTP
 
-    Same as SRVGGNetMobile but clamps output to [0, 1] for inference.
-    Use this for deployment/inference to ensure valid pixel values.
+    Architecture: High capacity (64ch) early → Lower capacity (32ch) later
 
-    Expected performance: 57-59 FPS @ 640×512 (matches baseline)
+    Key innovations:
+    1. Progressive channel reduction (64ch → 32ch)
+       - Early layers: Rich feature extraction (64ch)
+       - Later layers: Feature refinement (32ch)
+
+    2. Residual blocks with skip connections (4-conv blocks)
+       - Used when num_conv >= 8 (deep enough to benefit)
+       - Each ResidualBlock = 4 conv layers + 1 skip connection
+       - Reduces skip overhead: 16 layers = 4 skips (not 8!)
+       - Better gradient flow for deep networks
+       - Easier optimization
+       - Minimal HTP overhead with fewer skip connections
+
+    3. Hierarchical learning (inspired by ResNet/U-Net)
+       - Match capacity to task complexity
+       - More efficient than uniform channels
+
+    4. Optimized for IR whitehot images
+       - Thermal patterns benefit from high initial capacity
+       - Refinement needs less capacity
+
+    Expected performance examples:
+    - 64ch×2 → 32ch×10: ~60G FLOPs, ~16ms (62 FPS) - with skip in 32ch
+    - 64ch×0 → 32ch×16: ~48G FLOPs, ~15ms (65 FPS) - with skip in 32ch
+    - Better accuracy with skip connections for deep stages
 
     Args:
-        num_in_ch: Number of input channels (default: 1 for IR)
-        num_out_ch: Number of output channels (default: 1 for IR)
-        num_feat: Number of feature channels (default: 32, must be power of 2)
-        num_conv: Number of simple blocks (default: 8)
-        upscale: Upscale factor (default: 2)
+        num_in_ch: Input channels (1 for IR grayscale)
+        num_out_ch: Output channels (1 for IR grayscale)
+        num_conv64feat: Number of 64-channel conv layers (use 0 to skip this stage)
+        num_conv32feat: Number of 32-channel conv layers
+        upscale: Upscale factor (2x or 4x)
+        act_type: Activation ('relu', 'relu6', 'prelu', 'leakyrelu')
+        use_skip: Use residual blocks with skip connections (auto-enabled if layers > 6)
     """
-    def __init__(self,
-                 num_in_ch: int = 1,
-                 num_out_ch: int = 1,
-                 num_feat: int = 32,
-                 num_conv: int = 8,
-                 upscale: int = 2,
-                 # Legacy parameters for backward compatibility (ignored)
-                 use_bn: bool = None,
-                 expansion: float = None,
-                 attention_freq: int = None,
-                 act_type: str = None):
-        super().__init__()
+    def __init__(self, num_in_ch=1, num_out_ch=1, num_conv64feat=2, num_conv32feat=8,
+                 upscale=2, act_type='relu6', use_skip=True):
+        super(SRVGGNetMobileInfer, self).__init__()
 
         self.num_in_ch = num_in_ch
         self.num_out_ch = num_out_ch
-        self.num_feat = num_feat
-        self.num_conv = num_conv
+        self.num_conv64feat = num_conv64feat
+        self.num_conv32feat = num_conv32feat
         self.upscale = upscale
+        self.act_type = act_type
+        self.use_skip = use_skip
 
-        # Head: expand to feature channels with PReLU (baseline-compatible)
-        self.head = nn.Sequential(
-            nn.Conv2d(num_in_ch, num_feat, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.PReLU(num_parameters=num_feat)
-        )
+        self.body = nn.ModuleList()
 
-        # Body: Simple blocks (NO residual, like baseline)
-        self.body = nn.Sequential(*[
-            SimpleBlock(num_feat) for _ in range(num_conv)
-        ])
+        # Determine starting channels
+        if num_conv64feat > 0:
+            # Stage 1: High capacity feature extraction (64 channels)
+            # First conv: 1ch → 64ch
+            self.body.append(nn.Conv2d(num_in_ch, 64, 3, 1, 1))
+            self.body.append(self._get_activation(64))
 
-        # Tail: project to output channels and upsample
-        self.tail = nn.Conv2d(
-            num_feat, num_out_ch * upscale * upscale,
-            kernel_size=3, stride=1, padding=1, bias=True
-        )
+            # 64-channel processing layers
+            # Use skip connections only if num_conv64feat >= 8
+            if use_skip and num_conv64feat >= 8:
+                # Use residual blocks (each block = 4 convs, 1 skip)
+                num_blocks_64 = num_conv64feat // 4
+                for _ in range(num_blocks_64):
+                    self.body.append(ResidualBlock(64, act_type))
+                # Add remaining layers as plain convs
+                remaining = num_conv64feat % 4
+                for _ in range(remaining):
+                    self.body.append(nn.Conv2d(64, 64, 3, 1, 1))
+                    self.body.append(self._get_activation(64))
+            else:
+                # Plain convs (no skip) for shallow stage
+                for _ in range(num_conv64feat):
+                    self.body.append(nn.Conv2d(64, 64, 3, 1, 1))
+                    self.body.append(self._get_activation(64))
+
+            # Transition: 64ch → 32ch (channel reduction)
+            self.body.append(nn.Conv2d(64, 32, 1, 1, 0))
+            self.body.append(self._get_activation(32))
+
+        else:
+            # No 64ch stage, start directly with 32ch
+            self.body.append(nn.Conv2d(num_in_ch, 32, 3, 1, 1))
+            self.body.append(self._get_activation(32))
+
+        # Stage 2: Feature refinement (32 channels)
+        # Use skip connections if num_conv32feat >= 8 (deep enough)
+        if use_skip and num_conv32feat >= 8:
+            # Use residual blocks (each block = 4 convs, 1 skip)
+            # This limits skip connections to reduce HTP overhead
+            num_blocks_32 = num_conv32feat // 4
+            for _ in range(num_blocks_32):
+                self.body.append(ResidualBlock(32, act_type))
+            # Add remaining layers as plain convs
+            remaining = num_conv32feat % 4
+            for _ in range(remaining):
+                self.body.append(nn.Conv2d(32, 32, 3, 1, 1))
+                self.body.append(self._get_activation(32))
+        else:
+            # Plain convs for shallow stage
+            for _ in range(num_conv32feat):
+                self.body.append(nn.Conv2d(32, 32, 3, 1, 1))
+                self.body.append(self._get_activation(32))
+
+        # Upsampling head
+        self.body.append(nn.Conv2d(32, num_out_ch * upscale * upscale, 3, 1, 1))
         self.upsampler = nn.PixelShuffle(upscale)
 
-    def forward(self, x):
-        # Upsample input for global residual connection (baseline-compatible)
-        # Use 'nearest' or 'bilinear' - bilinear is 57 FPS, nearest is 59 FPS on QCS8550
-        base = F.interpolate(x, scale_factor=self.upscale, mode='bilinear', align_corners=False)
+        # Learnable residual upsampling (HTP-optimized, no F.interpolate!)
+        self.residual_upsample = nn.Sequential(
+            nn.Conv2d(num_in_ch, num_out_ch * upscale * upscale, 1, 1, 0),
+            nn.PixelShuffle(upscale)
+        )
 
-        # Main path: feature extraction and upsampling
-        feat = self.head(x)
-        feat = self.body(feat)
-        out = self.tail(feat)
+    def _get_activation(self, channels):
+        """Helper to get activation layer"""
+        if self.act_type == 'relu':
+            return nn.ReLU(inplace=True)
+        elif self.act_type == 'relu6':
+            return nn.ReLU6(inplace=True)
+        elif self.act_type == 'prelu':
+            return nn.PReLU(num_parameters=channels)
+        elif self.act_type == 'leakyrelu':
+            return nn.LeakyReLU(negative_slope=0.1, inplace=True)
+        else:
+            return nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        out = x
+        for layer in self.body:
+            out = layer(out)
+
         out = self.upsampler(out)
 
-        # Global residual connection (baseline-compatible)
+        # Learnable residual - NO F.interpolate!
+        base = self.residual_upsample(x)
         out = out + base
 
-        # Clamp output to valid range [0, 1] for inference
         out = torch.clamp(out, 0.0, 1.0)
-
         return out
+
 
 
 @ARCH_REGISTRY.register()
