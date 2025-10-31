@@ -268,7 +268,7 @@ class SRVGGNetMobileInfer(nn.Module):
         use_skip: Use residual blocks with skip connections (auto-enabled if layers > 6)
     """
     def __init__(self, num_in_ch=1, num_out_ch=1, num_conv64feat=2, num_conv32feat=8,
-                 upscale=2, act_type='relu6', use_skip=True):
+                 upscale=2, act_type='prelu', use_skip=False):
         super(SRVGGNetMobileInfer, self).__init__()
 
         self.num_in_ch = num_in_ch
