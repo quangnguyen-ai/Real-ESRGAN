@@ -45,6 +45,12 @@ class ResidualBlock(nn.Module):
         self.conv4 = nn.Conv2d(channels, channels, 3, 1, 1)
         self.act_type = act_type
 
+        # Create activation layers in __init__ so they're registered as modules
+        self.act1 = self._get_activation(channels)
+        self.act2 = self._get_activation(channels)
+        self.act3 = self._get_activation(channels)
+        self.act4 = self._get_activation(channels)
+
     def _get_activation(self, channels):
         """Helper to get activation layer"""
         if self.act_type == 'relu':
@@ -60,19 +66,15 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-        act1 = self._get_activation(self.conv1.out_channels)
-        act2 = self._get_activation(self.conv2.out_channels)
-        act3 = self._get_activation(self.conv3.out_channels)
-        act4 = self._get_activation(self.conv4.out_channels)
 
         out = self.conv1(x)
-        out = act1(out)
+        out = self.act1(out)
         out = self.conv2(out)
-        out = act2(out)
+        out = self.act2(out)
         out = self.conv3(out)
-        out = act3(out)
+        out = self.act3(out)
         out = self.conv4(out)
-        out = act4(out)
+        out = self.act4(out)
 
         # Skip connection after 4 convs
         out = out + residual
@@ -223,6 +225,9 @@ class SRVGGNetMobile(nn.Module):
 
         return out
 
+# The above code defines a PyTorch neural network model called
+# `SRVGGNetMobileInfer` for performing super-resolution on infrared (IR) images.
+# Here is a summary of what the code is doing:
 
 
 @ARCH_REGISTRY.register()
@@ -285,7 +290,7 @@ class SRVGGNetMobileInfer(nn.Module):
         if num_conv64feat > 0:
             # Stage 1: High capacity feature extraction (64 channels)
             # First conv: 1ch → 64ch
-            self.body.append(nn.Conv2d(num_in_ch, 64, 3, 1, 1))
+            self.body.append(nn.Conv2d(num_in_ch, 64, 5, 1, 2))
             self.body.append(self._get_activation(64))
 
             # 64-channel processing layers
